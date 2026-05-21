@@ -75,3 +75,21 @@ ignore = ["E501"]
 # Lockfile is committed (`uv.lock`) so every student gets byte-identical
 # installs. Regenerate only via `uv lock --upgrade` when we deliberately
 # want a newer patch of a transitive dep.
+
+# Defense-in-depth pins for transitive deps with known CVEs.
+# Bumping these as constraints (not direct deps) keeps the dependency
+# graph honest — these libraries are pulled in by httpx / requests /
+# rasa-pro, and we don't actually import them.
+#   idna >= 3.15:    CVE-2026-45409 — ReDoS via crafted Unicode hostnames
+#   urllib3 >= 2.7.0: CVE-2026-44431 (cross-origin header leak via
+#                     ProxyManager) + CVE-2026-44432 (over-read on
+#                     gzip/brotli decompression)
+# Neither CVE is reachable from this homework's code paths (we only
+# call hard-coded hosts) — these pins exist purely for hygiene.
+# `setuptools` is NOT bumped to 78.1.1 because the fix removed
+# `pkg_resources`, which breaks speechmatics-python's import path.
+# That CVE is also unreachable here (we never invoke PackageIndex).
+constraint-dependencies = [
+  "idna >= 3.15",
+  "urllib3 >= 2.7.0",
+]
