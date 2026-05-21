@@ -116,8 +116,41 @@ def fact_appears_in_log(fact: Any, log: list[ToolCallRecord] | None = None) -> b
 # verify_dataflow — the main check
 # ---------------------------------------------------------------------------
 def verify_dataflow(flyer_content: str) -> IntegrityResult:
+    """Audit a flyer against the tool-call log.
+
+    Bug fix (homework-pub-booking Issue #14): the original implementation
+    let `fact_appears_in_log` scan both `output` and `arguments` of every
+    record — including `generate_flyer`'s OWN arguments. Since the flyer's
+    facts are passed as arguments into `generate_flyer`, the flyer would
+    self-verify even if the LLM made the numbers up. To close that loop:
+
+      1. Build `audit_records` that EXCLUDE generate_flyer's record. The
+         flyer cannot be its own source of truth.
+      2. PROJECT each remaining record so only `output` is visible to the
+         scanner. Arguments to tools like calculate_cost are user-supplied
+         (e.g. party_size=6) and shouldn't count as "produced by a tool".
+         Only what the tool *returned* is ground truth.
+
+    The helper `fact_appears_in_log()` itself is kept untouched because
+    `test_fact_appears_in_log_helper` exercises its raw contract. The fix
+    lives in *how* verify_dataflow builds the log it passes in.
+    """
     if not flyer_content or not flyer_content.strip():
         return IntegrityResult(ok=True, summary="no facts to verify (empty flyer)")
+
+    # Build the projected audit log: drop generate_flyer's record entirely,
+    # and project the rest to outputs-only (arguments={} so the scanner
+    # never sees them).
+    audit_records: list[ToolCallRecord] = [
+        ToolCallRecord(
+            tool_name=r.tool_name,
+            arguments={},
+            output=r.output,
+            timestamp=r.timestamp,
+        )
+        for r in _TOOL_CALL_LOG
+        if r.tool_name != "generate_flyer"
+    ]
 
     facts_to_check: list[str] = []
     facts_to_check.extend(extract_money_facts(flyer_content))
@@ -141,7 +174,7 @@ def verify_dataflow(flyer_content: str) -> IntegrityResult:
     verified: list[str] = []
     unverified: list[str] = []
     for fact in deduped:
-        if fact_appears_in_log(fact):
+        if fact_appears_in_log(fact, log=audit_records):
             verified.append(fact)
         else:
             unverified.append(fact)

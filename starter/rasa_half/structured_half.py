@@ -1,9 +1,13 @@
 """Ex6 — RasaStructuredHalf reference solution.
 
 Two paths:
-  1. Real Rasa Pro container (default when RASA_PRO_LICENSE is set).
-     Uses docker-compose to spawn rasa + action-server, waits for
-     health, POSTs to /webhooks/rest/webhook, tears down on exit.
+  1. Real Rasa Pro as host processes (default when RASA_PRO_LICENSE
+     is set). Uses `RasaHostLifecycle` (below) to spawn
+     `rasa run --enable-api` and `rasa run actions` directly in the
+     current venv (no Docker), waits for health, POSTs to
+     /webhooks/rest/webhook, tears down on exit. Docker was removed
+     in CHANGELOG v10 — see the `RasaHostLifecycle` docstring for
+     why host-process is the right default for this homework.
   2. Stdlib mock server (when RASA_PRO_LICENSE is empty or --mock
      is passed). Lets students without a license progress through
      HTTP-contract tests.
@@ -247,10 +251,14 @@ class RasaHostLifecycle:
         startup_timeout_s: float = 180.0,
         log_dir: Path | None = None,
     ) -> None:
-        # Default to the homework's rasa_project/ at the repo root
-        self.rasa_project_dir = rasa_project_dir or (
-            _SOLUTION_EX6.parent.parent.parent / "rasa_project"
-        )
+        # Default to the homework's rasa_project/ at the repo root.
+        # _SOLUTION_EX6 is .../starter/rasa_half/, so two parents up is
+        # the repo root and `rasa_project/` sits directly there.
+        # (The original code had three parents, which walked above the
+        # repo entirely — produced a "rasa_project/ not found" error
+        # when the homework was checked out anywhere except its own
+        # parent directory.)
+        self.rasa_project_dir = rasa_project_dir or (_SOLUTION_EX6.parent.parent / "rasa_project")
         self.rasa_port = rasa_port
         self.action_port = action_port
         self.startup_timeout_s = startup_timeout_s

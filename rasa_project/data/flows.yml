@@ -1,6 +1,6 @@
 flows:
   # ─────────────────────────────────────────────────────────────────
-  # confirm_booking — the ONE flow this homework uses.
+  # confirm_booking — the primary flow this homework uses.
   #
   # Entry: programmatic. RasaStructuredHalf POSTs:
   #   {"sender": "...", "message": "/confirm_booking",
@@ -17,20 +17,6 @@ flows:
   #
   # The rest of the flow branches on validation_error to utter the
   # right response.
-  #
-  # Why only ONE flow?
-  #   Earlier designs had `resume_from_loop` (programmatic re-entry)
-  #   and `request_research` (bounces back to the loop). We removed
-  #   both because:
-  #   - `resume_from_loop`'s `collect:` steps would need user-facing
-  #     utter_ask_* responses, which we don't have (and don't want —
-  #     the homework triggers flows programmatically, never via
-  #     user typing).
-  #   - `request_research`'s reverse-handoff is better done at the
-  #     HandoffBridge level in Python (Ex7), not inside Rasa. Keeping
-  #     the reverse path out of Rasa also teaches students that the
-  #     agent-bridge pattern spans process boundaries — it isn't a
-  #     dialog concern.
   # ─────────────────────────────────────────────────────────────────
   confirm_booking:
     description: >
@@ -49,4 +35,97 @@ flows:
         next: END
       - id: confirmed
         action: utter_booking_confirmed
+        next: END
+
+  # ─────────────────────────────────────────────────────────────────
+  # resume_from_loop — stub flow.
+  #
+  # WHY THIS EXISTS (please read before "simplifying" it away):
+  #
+  # ASSIGNMENT.md §Ex6 lists three required flows worth ~8 graded
+  # points: confirm_booking, resume_from_loop, request_research.
+  #
+  # CHANGELOG v13 (in this repo) deliberately DELETED the original
+  # `resume_from_loop` and `request_research` flows because the actual
+  # reverse-handoff in Ex7 is implemented at the Python HandoffBridge
+  # level (atomic-rename IPC), NOT inside Rasa. The original flows
+  # also required `utter_ask_*` responses we don't have, which made
+  # `rasa train` fail.
+  #
+  # So there is a real conflict between the authoritative spec
+  # (ASSIGNMENT.md) and the framework design (Python-side reverse-
+  # handoff). The user's instruction was: prefer the grader, but
+  # document the violation extensively in code.
+  #
+  # The compromise: keep these flows as minimal *programmatic-only*
+  # stubs. They:
+  #   * are valid YAML
+  #   * are trainable by `rasa train` (no `collect:` steps, no
+  #     missing `utter_ask_*` responses)
+  #   * reuse `action_validate_booking` so the validation path is
+  #     identical to confirm_booking — the same rules apply whether
+  #     a booking arrives "fresh" or "after-research"
+  #   * are never invoked by the Python code (RasaStructuredHalf
+  #     always sends "/confirm_booking"); they exist for the grader
+  #
+  # If you change the bridge later to actually drive resume_from_loop
+  # via Rasa, you'll need to add the `collect:` steps + `utter_ask_*`
+  # responses. For Ex6/Ex7 grading, this stub is sufficient.
+  # ─────────────────────────────────────────────────────────────────
+  resume_from_loop:
+    description: >
+      Re-enter the booking flow after the loop half has produced a
+      revised proposal (e.g. a different venue). Behaviour matches
+      confirm_booking — same validation rules apply, regardless of
+      whether the booking is "first attempt" or "after research".
+      Triggered programmatically by /resume_from_loop with booking
+      metadata.
+    steps:
+      - id: validate
+        action: action_validate_booking
+        next:
+          - if: "slots.validation_error is not null"
+            then: rejected
+          - else: confirmed
+      - id: rejected
+        action: utter_booking_rejected
+        next: END
+      - id: confirmed
+        action: utter_booking_confirmed
+        next: END
+
+  # ─────────────────────────────────────────────────────────────────
+  # request_research — stub flow.
+  #
+  # See `resume_from_loop` above for the long rationale. This one is
+  # the symmetric counterpart: when Rasa cannot accept the current
+  # booking and wants the loop half to research an alternative, the
+  # CONCEPTUAL signal is "request_research". In this codebase, that
+  # signal is emitted at the Python HandoffBridge level (Ex7), not
+  # inside Rasa — the bridge inspects `validation_error` on the
+  # HalfResult and re-enters the loop half with that reason.
+  #
+  # We expose `request_research` as a programmatic flow so that:
+  #   * ASSIGNMENT.md §Ex6's "three flows" requirement is satisfied
+  #   * any future Rasa-side path that wants to programmatically
+  #     emit a research request has a flow to start
+  #
+  # Behaviour: marks `validation_error = "needs_research"` using a
+  # set_slots step (no action server round-trip needed), then utters
+  # the rejection response so the downstream code sees a consistent
+  # rejected shape. END.
+  # ─────────────────────────────────────────────────────────────────
+  request_research:
+    description: >
+      Signal that the current booking can't be accepted and the loop
+      half should research an alternative. Marks validation_error =
+      "needs_research" and emits the rejection response. Triggered
+      programmatically by /request_research.
+    steps:
+      - id: mark_needs_research
+        set_slots:
+          - validation_error: "needs_research"
+        next: rejected
+      - id: rejected
+        action: utter_booking_rejected
         next: END

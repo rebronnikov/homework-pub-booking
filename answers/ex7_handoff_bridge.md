@@ -2,31 +2,50 @@
 
 ## Your answer
 
-The HandoffBridge orchestrates round-trips between the loop half and
-structured half. Each round: loop runs, if next_action=handoff_to_structured
-the bridge writes a forward handoff file, invokes structured, and then
-either marks the session complete (structured confirmed) or builds a
-reverse task and loops back (structured escalated).
+I ran the bridge offline (`make ex7`, session `sess_86dab8dc4888`)
+and against real Nebius (`make ex7-real`, session
+`sess_4198f5144a74`, loop driven by Qwen3-Next-80B-A3B-Thinking /
+Qwen3-32B, structured by the stdlib mock because I haven't added a
+RASA_PRO_LICENSE yet). The scripted offline trajectory hits the
+canonical happy-recovery path: round 1 proposes Haymarket Tap with
+party=12, structured rejects with `party_too_large` (trace event 7
+`session.state_changed { from: structured, to: loop, round: 1,
+rejection_reason: "...party_too_large" }`), round 2 proposes Royal
+Oak with party=6 and structured confirms (event 14, `structured →
+complete`).
 
-The reverse-task path is the interesting one. On escalation, the
-bridge rewrites the initial_task into a dict that contains
-prior_result + rejection_reason + retry=True. The loop half sees
-this via the new executor invocation and — in a real LLM setting —
-would produce a different subgoal. In the scripted offline demo we
-hardcode the retry choice (royal_oak with 16 seats) so the test is
-deterministic.
+The real-Nebius run was more honest about how LLMs misbehave. The
+round-1 planner produced 3 subgoals (vs the scripted 1), and the
+executor called `handoff_to_structured` without a `venue_id` in the
+data payload — `normalise_booking_payload` raised
+`ValidationFailed: missing venue_id`, which the bridge surfaced as
+a reverse handoff with `rejection_reason: "normalisation failed:
+missing venue_id"`. Round 2 produced 2 subgoals, the executor
+exercised `venue_search` and `list_files` to recover, and the
+bridge eventually emitted `state_changed { from: executing, to:
+complete }`. The framework caught the malformed handoff at the
+validator boundary — exactly where Decision 6 (deterministic
+enforcement at the structured half) is supposed to bite.
 
-Every half transition emits a session.state_changed trace event via
-session.append_trace_event(). The integrity check (integrity.py)
-verifies the trace has at least one round_start, at least one
-state_changed, and at least one tool call — catching the case where
-the bridge reports success without doing real work.
+The IPC discipline is fail-closed in both runs: only one
+`ipc/handoff_to_structured.json` ever visible. Before writing a
+new forward handoff, the bridge moves any existing file into
+`logs/handoffs/`. Inspecting `sess_86dab8dc4888/ipc/` after each
+round confirmed this — never two handoffs in flight.
 
-The stale-handoff cleanup moves old ipc/handoff_to_structured.json
-files into logs/handoffs/ instead of deleting them, preserving the
-audit trail.
+One Makefile bug surfaced: `make ex7-real` was advertised in
+README/ASSIGNMENT but the target was missing AND the underlying
+`run.py` was wired to FakeLLMClient regardless of `--real` (Issue
+#5 only flagged the missing target). I fixed both — the target
+now exists and `run.py` switches to `OpenAICompatibleClient` when
+`--real`, with a mock-Rasa fallback when no `RASA_PRO_LICENSE`.
 
 ## Citations
 
-- starter/handoff_bridge/bridge.py — HandoffBridge.run + helpers
-- starter/handoff_bridge/integrity.py — verify_dataflow
+- `sess_86dab8dc4888/logs/trace.jsonl` events 6, 7, 13, 14 — offline state transitions
+- `sess_4198f5144a74/logs/trace.jsonl` — real-Nebius reverse handoff with normalisation failure
+- `sess_86dab8dc4888/logs/tickets/tk_44908bc2/raw_output.json` — round-1 planner output
+- `sess_86dab8dc4888/ipc/handoff_to_structured.json` — single-forward-handoff invariant
+- `starter/handoff_bridge/bridge.py` — HandoffBridge.run, fail-closed IPC rotation
+- `starter/handoff_bridge/run.py` — fixed `--real` to switch loop to OpenAI-compatible
+- `Makefile` — added `ex7-real` target

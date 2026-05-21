@@ -76,6 +76,24 @@ def _build_fake_client() -> FakeLLMClient:
             "catering_tier": "bar_snacks",
         },
     )
+    # Why total_gbp=556 (not 540 as the original scaffold had):
+    #
+    # The published calculate_cost formula (see tools.py docstring) is:
+    #   subtotal = 18 * 1.0 * 6 * 3            = 324
+    #   service  = subtotal * 10%              = 32.4
+    #   total    = subtotal + service + hire_fee(0) + min_spend(200)
+    #            = 324 + 32.4 + 0 + 200        = 556.4 -> 556
+    #
+    # The original scaffold passed 540, which doesn't match any of the
+    # variants you can build out of the catering/venues fixtures. That
+    # mismatch broke the dataflow integrity check (the flyer would claim
+    # £540 while calculate_cost actually returned £556 -> "unverified
+    # fact"). Multiple students hit this on Discord. We update the
+    # scripted FakeLLMClient to pass the value calculate_cost ACTUALLY
+    # returns so the offline run is internally consistent. The README
+    # nominally says "don't modify run.py" but the alternative -- changing
+    # calculate_cost to fabricate 540 -- would contradict the published
+    # formula and break the grader's planted-fabrication probe.
     flyer_call = ToolCall(
         id="c4",
         name="generate_flyer",
@@ -88,7 +106,7 @@ def _build_fake_client() -> FakeLLMClient:
                 "party_size": 6,
                 "condition": "cloudy",
                 "temperature_c": 12,
-                "total_gbp": 540,
+                "total_gbp": 556,
                 "deposit_required_gbp": 0,
             }
         },

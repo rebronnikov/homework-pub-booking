@@ -51,6 +51,12 @@ desktop.ini
 # If you keep working notes, put them under answers-local/ instead.
 answers-local/
 
+# ── Local working notes (never submitted) ────────────────────────────
+# *.local.md is a convention for personal scratchpads / plan files that
+# document our approach but shouldn't appear in the submitted repo.
+*.local.md
+Discord.rtf
+
 # ── Uploads for grader ───────────────────────────────────────────────
 # The grader's private tests are materialised here at CI time.
 # They should never be checked in by students.

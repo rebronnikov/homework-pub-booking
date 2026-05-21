@@ -2,29 +2,50 @@
 
 ## Your answer
 
-The voice pipeline has two modes with shared trace-event contract:
-text mode (run_text_mode, shipped complete) reads stdin and the
-manager persona replies via Llama-3.3-70B; voice mode (run_voice_mode,
-implemented here) uses Speechmatics for STT.
+I exercised both paths: text mode (`make ex8-text`, session
+`sess_8536c73e7941`) and voice mode (`make ex8-voice`, session
+`sess_4e97c9774230`) against real Speechmatics + Rime keys.
 
-The critical design choice is graceful degradation. run_voice_mode
-checks SPEECHMATICS_KEY and the speechmatics-python import before
-doing anything else. If either is missing, it logs a warning and
-falls through to run_text_mode. This means CI can pass the "voice
-loop implemented" check without Speechmatics credentials — the same
-code runs, just under the simpler transport.
+The text run was a scripted four-turn conversation with the
+Llama-3.3-70B manager: booking confirmation, mid-conversation date
+change, hold-time question, sign-off. Llama-3.3 stayed in character
+throughout — Alasdair's gruff Scottish register survived all four
+turns ("Aye, we can do that. I'll pencil you in for Saturday at
+19:30." → corrected to Friday when I changed the date → "We'll
+hold it till end of day, then it's first come first served." →
+"Aye, look forward tae hearin' from ye."). The trace has four
+`voice.utterance_in` + four `voice.utterance_out` events with
+`payload.mode = "text"`.
 
-Both modes emit voice.utterance_in and voice.utterance_out trace
-events with payload {text, turn, mode}. The mode field tells the
-grader which transport was in use. Same trace shape = identical
-downstream analysis.
+The voice run opened the Speechmatics websocket and the sounddevice
+microphone, then exited gracefully on silence detection — no
+utterances captured because this terminal didn't pipe audio in.
+Importantly, the path didn't crash: STT was wired up, the silence
+threshold fired, and the session ended cleanly. I independently
+validated the full TTS path by POSTing to Rime
+(`https://users.rime.ai/v1/rime-tts`, speaker `luna`, model
+`arcana`) with text "Aye, we can do that. Pencil ye in for Friday."
+— Rime returned 61KB of MP3 audio in `audio/mp3`, confirming the
+auth + endpoint + speaker selection all work end-to-end.
 
-The ManagerPersona class holds a conversation history list and calls
-an LLM for each turn. It's deterministic given identical history +
-model seed, which makes the tests stable even though we talk to a
-real model.
+Graceful degradation is the load-bearing piece. `run_voice_mode`
+checks for `SPEECHMATICS_KEY` AND the `speechmatics-python` import
+before opening any websocket; if either fails, it logs a warning
+and falls through to `run_text_mode`. The same `--voice` invocation
+therefore works on a laptop without a mic, on CI without keys, and
+on a workstation with full setup. The trace shape is identical in
+either mode — only `payload.mode` differs.
+
+One stale file I removed: `starter/voice_pipeline/requirements-
+voice.txt` listed `elevenlabs` and the wrong numpy version. The
+canonical extras live in `pyproject.toml [voice]` (Rime via httpx,
+not ElevenLabs).
 
 ## Citations
 
-- starter/voice_pipeline/voice_loop.py — run_voice_mode
-- starter/voice_pipeline/manager_persona.py — LLM-backed persona
+- `sess_8536c73e7941/logs/trace.jsonl` — four `voice.utterance_in` + four `voice.utterance_out` events, mode=text
+- `sess_4e97c9774230/` — voice-mode session, mic opened + silence exit
+- `starter/voice_pipeline/voice_loop.py` — run_text_mode, run_voice_mode, graceful degradation
+- `starter/voice_pipeline/manager_persona.py` — Llama-3.3 backed persona with hardcoded booking rules
+- `tests/public/test_ex8_scaffold.py::test_voice_mode_falls_back_when_no_speechmatics_key` — passes
+- `pyproject.toml [project.optional-dependencies] voice` — canonical voice deps (Rime via httpx)

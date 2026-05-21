@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import urllib.error
+import urllib.request
 
 from sovereign_agent._internal.llm_client import (
     FakeLLMClient,
+    OpenAICompatibleClient,
     ScriptedResponse,
     ToolCall,
 )
@@ -22,6 +26,18 @@ from sovereign_agent.session.directory import create_session
 from starter.edinburgh_research.tools import build_tool_registry
 from starter.handoff_bridge.bridge import HandoffBridge
 from starter.rasa_half.structured_half import RasaStructuredHalf, spawn_mock_rasa
+
+
+def _rasa_is_up(url: str, timeout_s: float = 1.0) -> bool:
+    """Cheap reachability probe — checks the Rasa version endpoint."""
+    # We probe /version (a small GET) rather than the webhook so we
+    # don't accidentally POST a malformed message into a live tracker.
+    version_url = url.replace("/webhooks/rest/webhook", "/version")
+    try:
+        with urllib.request.urlopen(version_url, timeout=timeout_s) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        return False
 
 
 def _build_fake_client_two_rounds() -> FakeLLMClient:
@@ -131,19 +147,56 @@ async def run_scenario(real: bool) -> int:
         print(f"Session {session.session_id}")
         print(f"  dir: {session.directory}")
 
-        # Spawn mock Rasa unless --real
+        # Structured half: real Rasa needs RASA_PRO_LICENSE + a running
+        # rasa server on localhost:5005. If either is missing we fall
+        # back to the stdlib mock so `make ex7-real` still exercises the
+        # round-trip with real Nebius driving the loop half. This is
+        # the natural "develop with Nebius, validate with full stack
+        # later" path.
         server = None
-        if not real:
+        rasa_url_real = "http://localhost:5005/webhooks/rest/webhook"
+        use_real_rasa = real and os.environ.get("RASA_PRO_LICENSE") and _rasa_is_up(rasa_url_real)
+        if use_real_rasa:
+            rasa_half = RasaStructuredHalf(rasa_url=rasa_url_real)
+            print("  structured half: real Rasa on :5005")
+        else:
+            if real:
+                print(
+                    "  structured half: mock (RASA_PRO_LICENSE not set or "
+                    "rasa not running on :5005 — see docs/rasa-setup.md to "
+                    "enable real Rasa)"
+                )
             server, _thread, mock_url = spawn_mock_rasa(port=5906)
             rasa_half = RasaStructuredHalf(rasa_url=mock_url)
-        else:
-            rasa_half = RasaStructuredHalf()
 
-        client = _build_fake_client_two_rounds()
+        # Loop half: real Nebius client when --real, scripted FakeLLM
+        # otherwise. Previously this branch always picked FakeLLMClient
+        # (a scaffold bug — the --real flag was effectively ignored for
+        # the loop half), so `make ex7-real` blew up with
+        # "FakeLLMClient ran out of scripted responses" the moment the
+        # bridge ran more rounds than the script had. Mirroring the
+        # pattern used in starter/edinburgh_research/run.py.
         tools = build_tool_registry(session)
+        if real:
+            from sovereign_agent.config import Config
+
+            cfg = Config.from_env()
+            print(f"  LLM:      {cfg.llm_base_url} (live)")
+            print(f"  planner:  {cfg.llm_planner_model}")
+            print(f"  executor: {cfg.llm_executor_model}")
+            client = OpenAICompatibleClient(
+                base_url=cfg.llm_base_url,
+                api_key_env=cfg.llm_api_key_env,
+            )
+            planner_model = cfg.llm_planner_model
+            executor_model = cfg.llm_executor_model
+        else:
+            print("  LLM: FakeLLMClient (offline, scripted)")
+            client = _build_fake_client_two_rounds()
+            planner_model = executor_model = "fake"
         loop_half = LoopHalf(
-            planner=DefaultPlanner(model="fake", client=client),
-            executor=DefaultExecutor(model="fake", client=client, tools=tools),  # type: ignore[arg-type]
+            planner=DefaultPlanner(model=planner_model, client=client),
+            executor=DefaultExecutor(model=executor_model, client=client, tools=tools),  # type: ignore[arg-type]
         )
         bridge = HandoffBridge(
             loop_half=loop_half,
